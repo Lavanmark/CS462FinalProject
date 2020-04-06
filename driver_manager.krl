@@ -7,7 +7,7 @@ ruleset driver_manager {
   global {
     __testing = { "queries":
       [ { "name": "__testing" },
-        { "name": "get_drivers" }
+        { "name": "get_drivers", "attrs" : ["num_drivers"] }
       ] , "events":
       [ 
       ]
@@ -15,9 +15,9 @@ ruleset driver_manager {
     
     get_drivers = function(num_drivers){
       drivers = wrangler:children()
-      rand_start = random:integer(drivers.length() - num_drivers)
+      rand_start = random:integer(drivers.length() - num_drivers).klog("random was")
       drivers.length() < num_drivers => drivers | 
-        drivers.slice(rand_start, rand_start + num_drivers)
+        drivers.slice(rand_start, rand_start + (num_drivers - 1))
     }
   }
   
