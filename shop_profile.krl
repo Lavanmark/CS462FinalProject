@@ -1,7 +1,9 @@
 ruleset shop_profile {
   meta {
     use module io.picolabs.wrangler alias wrangler
-    shares __testing
+    use module io.picolabs.subscription alias subscription
+    shares __testing, get_message_profile
+    provides get_message_profile
   }
   global {
     __testing = { "queries":
@@ -13,6 +15,13 @@ ruleset shop_profile {
       ]
     }
     
+    get_message_profile = function() {
+      {
+        "location": ent:location,
+        "min_driver_rating": ent:min_driver_rating,
+        "contact_tx": wrangler:myself(){"eci"}
+      }
+    }
     
   }
   
