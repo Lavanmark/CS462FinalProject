@@ -3,15 +3,18 @@ ruleset driver {
     
     use module io.picolabs.wrangler alias wrangler
     use module io.picolabs.subscription alias subscription
+    use module driver_profile alias profile
     
-    shares __testing, get_known_peers, get_peers_by_id, get_name
+    shares __testing, get_known_peers, get_peers_by_id, get_name, get_available_deliveries, get_current_delivery
     provides get_name
   }
   global {
     __testing = { "queries":
       [ { "name": "__testing" },
         { "name": "get_known_peers" },
-        { "name": "get_peers_by_id" }
+        { "name": "get_peers_by_id" },
+        { "name": "get_available_deliveries" },
+        { "name": "get_current_delivery" }
       ] , "events":
       [ //{ "domain": "d1", "type": "t1" }
       //, { "domain": "d2", "type": "t2", "attrs": [ "a1", "a2" ] }
@@ -30,19 +33,136 @@ ruleset driver {
       wrangler:myself(){"name"}
     }
     
+    get_available_deliveries = function() {
+      ent:available_deliveries
+    }
+    
+    get_current_delivery = function() {
+      ent:current_delivery
+    }
+    
+    is_qualified = function(delivery_req) {
+      true //TODO: Ammon - update this to check if the driver meets the qualifications
+    }
+    
     min_known_peers = 2
     need_peer_poll = 30
   }
   
+  /*****************************************************************************
+  
+                GENERAL
+  
+  *****************************************************************************/
   
   
+  rule ruleset_added { 
+    //initialize all entity variables here
+    select when wrangler ruleset_added where rids >< meta:rid
+    always {
+        ent:known_peers := []
+        ent:peer_names_by_id := {}
+        ent:available_deliveries := {}
+        ent:current_delivery := null
+    }
+  }  
   
   
+  rule new_delivery_request {
+    select when driver new_delivery_request
+    pre {
+      message = event:attr("message")
+      shop_tx = message{"Shop_Profile"}{"contact_tx"}
+      delivery_id = message{"Delivery_ID"}
+      qualified = is_qualified(message)
+    }
+    if qualified then noop()
+    fired {
+      ent:available_deliveries{delivery_id} := message.klog("message was")
+      raise driver event "make_bid"
+        attributes {"shop_tx": shop_tx, "Delivery_ID": delivery_id }
+    }
+  }
+  
+
   
   
+  /*****************************************************************************
+  
+                BID LOGIC
+  
+  *****************************************************************************/  
   
   
+  rule make_delivery_bid {
+    select when driver make_bid
+    pre {
+      in_delivery = not ent:current_delivery.isnull()
+      shop_tx = event:attr("shop_tx")
+      delivery_id = event:attr("Delivery_ID")
+      driver_profile = profile:get_profile()
+    }
+    if not in_delivery && not ent:made_bid then
+      event:send({"eci":shop_tx, "domain": "shop", "type": "new_delivery_bid", "attrs":{
+        "Delivery_ID": delivery_id,
+        "Driver_Profile": driver_profile
+      }}) 
+    fired {
+      ent:made_bid := true
+    }
+  }
   
+  rule bid_rejected {
+    select when driver bid_rejected
+    pre {
+      delivery_id = event:attr("Delivery_ID")
+      reason = event:attr("reason")
+    }
+    always{
+      ent:available_deliveries := ent:available_deliveries.delete(delivery_id)
+      ent:made_bid := false
+    }
+  }
+  
+  
+  //create_bid_accepted_message = function(delivery_id, driver_id) {
+  //   {
+  //     "Message_ID": new_message_ID(),
+  //     "Type": "Bid_Accepted",
+  //     "Delivery_ID": delivery_id,
+  //     "Assigned_Driver": driver_id
+  //   }
+  // }
+  rule bid_accepted {
+    select when driver bid_accepted
+    pre {
+      message = event:attrs
+      delivery_id = event:attr("Delivery_ID")
+      driver_id = event:attr("Assigned_Driver")
+      delivery = ent:available_deliveries{delivery_id}
+    }
+    if driver_id == meta:picoId /*&& not delivery.isnull()*/ then noop()
+    fired{
+      ent:current_delivery := delivery
+      ent:made_bid := false
+      ent:available_deliveries := ent:available_deliveries.delete(delivery_id)
+      raise driver_gossip event "rumor"
+        attributes {"message": message}
+    }
+  }
+  
+  rule delivery_taken {
+    select when driver delivery_taken
+    pre {
+      message = event:attr("message")
+      delivery_id = message{"Delivery_ID"}
+      delivery = ent:available_deliveries{delivery_id}
+    }
+    if not delivery.isnull() then noop()
+    fired{
+      ent:available_deliveries := ent:available_deliveries.delete(delivery_id)
+    }
+  }
   
   
   
@@ -146,17 +266,6 @@ ruleset driver {
         if was_peer
       ent:peer_names_by_id := ent:peer_names_by_id.delete(lost_id)
         if was_peer
-    }
-  }
-  
-  
-  
-  rule ruleset_added { 
-    //initialize all entity variables here
-    select when wrangler ruleset_added where rids >< meta:rid
-    always {
-        ent:known_peers := []
-        ent:peer_names_by_id := {}
     }
   }
   
