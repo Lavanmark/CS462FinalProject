@@ -29,7 +29,7 @@ ruleset flower_shop_manager {
     }
     
     shop_rulesets = ["shop", "shop_profile", "shop_keys", "customer_communication"]
-    initial_drivers = 3
+    initial_drivers = 2
   }
   
   
@@ -49,7 +49,7 @@ ruleset flower_shop_manager {
                                    "phone_number": shop_phone}
       raise wrangler event "child_creation"
       attributes {"name": shop_name,
-                  "color": "#ffff00",
+                  "color": "#00ff00",
                   "rids": shop_rulesets }
     }
   }
