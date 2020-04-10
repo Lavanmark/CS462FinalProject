@@ -38,7 +38,7 @@ ruleset driver_manager {
       drivers.isnull() && drivers.length() > 0
     }
     
-    driver_rulesets = ["driver", "driver_profile"]
+    driver_rulesets = ["driver", "driver_profile", "driver_gossip"]
     initial_peers = 2
   }
   
