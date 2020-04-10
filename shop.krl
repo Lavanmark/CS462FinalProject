@@ -5,6 +5,10 @@ ruleset shop {
       with account_sid = keys:twilio{"account_sid"}
       auth_token = keys:twilio{"auth_token"}
     
+    use module google_maps_keys
+    use module distance
+      with api_key= keys:maps{"api_key"}
+      
     use module shop_profile alias profile
     use module io.picolabs.wrangler alias wrangler
     use module io.picolabs.subscription alias subscription
@@ -19,7 +23,8 @@ ruleset shop {
         { "name": "get_schedule"}
       ] , "events":
       [ //{ "domain": "d1", "type": "t1" }
-        { "domain": "shop", "type": "new_order", "attrs": [ "destination", "pickup time", "delivery deadline" ] }
+        { "domain": "shop", "type": "new_order", "attrs": [ "destination", "pickup time", "delivery deadline" ] },
+        { "domain": "shop", "type": "update_max_distance", "attrs": [ "max_distance" ] }
       ]
     }
     
@@ -72,7 +77,7 @@ ruleset shop {
         "Delivery_ID": new_delivery_ID(),
         "Shop_Profile": profile,
         "Delivery_Destination": destination,
-        "Pickup_Time": time,
+        "Pickup_Time": pickup_time,
         "Delivery_Deadline": deadline
       }
     }
@@ -88,7 +93,27 @@ ruleset shop {
     
     does_driver_qualify = function(delivery_id, driver_profile) {
       delivery_req = ent:delivery_requests.get(delivery_id)
-      true //TODO: Ammon - update this with code similar to driver code.
+      
+      shop_profile = delivery_req{"Shop_Profile"}
+      shop_location = shop_profile{"location"}
+      min_driver_rating = shop_profile{"min_driver_rating"}
+      
+      driver_location = driver_profile{"location"}
+      driver_rating = driver_profile{"rating"}
+      
+      
+      distance = driver_rating >= min_driver_rating => distance:get_distance(shop_location, driver_location) | ent:max_distance_in_miles + 1
+
+      result = (distance < ent:max_distance_in_miles) => { "qualified": true, "distance": distance } | 
+        ((driver_rating >= min_driver_rating) => { 
+          "qualified": false, 
+          "distance": distance:get_distance(shop_location, driver_location) 
+        } | { 
+          "qualified": false, 
+          "distance": ent:max_distance_in_miles
+        })
+        
+      result.klog("Result:- ")
     }
     
     
@@ -98,14 +123,25 @@ ruleset shop {
     need_driver_poll = 30
   }
   
+  rule update_max {
+    select when shop update_max_distance
+    
+    pre{
+      max_distance = event:attr("max_distance").as("Number")
+    }
+    
+    always {
+      ent:max_distance_in_miles := max_distance
+    }
+  }
   
   
   rule new_flower_order {
     select when shop new_order
     pre {
       dest = event:attr("destination")
-      pickup = event:attr("pickup time")
-      deadline = event:attr("delivery deadline")
+      pickup = event:attr("pickup time") || time:now()
+      deadline = event:attr("delivery deadline") || time:add(time:new(time:now().substr(0,10)),{"days": 1})
       profile = profile:get_message_profile()
       message = create_new_delivery_request_rumor_message(profile, dest, pickup, deadline)
     }
@@ -133,15 +169,25 @@ ruleset shop {
       delivery_id = event:attr("Delivery_ID")
       driver_profile = event:attr("Driver_Profile")
       is_available = ent:drivers_for_deliveries{delivery_id}.isnull()
-      driver_qualifies = does_driver_qualify(delivery_id, driver_profile)
+       result = does_driver_qualify(delivery_id, driver_profile)
+       driver_qualifies = result{"qualified"}
+       distance = result{"distance"}
     }
     if is_available && driver_qualifies then noop()
     fired {
       raise shop event "accept_bid"
-        attributes event:attrs
+        attributes {
+          "Delivery_ID": delivery_id,
+          "Driver_Profile": driver_profile,
+          "distance": distance
+        }
     } else {
       raise shop event "reject_bid"
-        attributes event:attrs
+        attributes {
+          "Delivery_ID": delivery_id,
+          "Driver_Profile": driver_profile,
+          "distance": distance
+        }
     }
   }
   
@@ -150,14 +196,20 @@ ruleset shop {
     pre {
       delivery_id = event:attr("Delivery_ID")
       driver_profile = event:attr("Driver_Profile")
+      distance = event:attr("distance")
       driver_tx = driver_profile{"contact_tx"}
       is_available = ent:drivers_for_deliveries{delivery_id}.isnull()
-      reason = is_available => "Driver not qualified" | "Delivery no longer available"
+      reason = is_available => ((distance == ent:max_distance_in_miles) => "Driver not qualified" | "Driver too far out. Try again.") | "Delivery no longer available"
     }
     event:send({"eci": driver_tx, "domain": "driver", "type": "bid_rejected", "attrs":{
       "Delivery_ID": delivery_id,
       "reason": reason
     }})
+    
+    fired{
+      ent:max_distance_in_miles := distance
+        if distance > ent:max_distance_in_miles
+    }
   }
   
   rule accept_bid {
@@ -165,11 +217,14 @@ ruleset shop {
     pre {
       delivery_id = event:attr("Delivery_ID")
       driver_profile = event:attr("Driver_Profile")
+      distance = event:attr("distance")
       driver_tx = driver_profile{"contact_tx"}
       message = create_bid_accepted_message(delivery_id, driver_profile{"id"})
     }
     event:send({"eci": driver_tx, "domain": "driver", "type": "bid_accepted", "attrs": message })
     fired{
+      ent:max_distance_in_miles := distance
+        if distance < ent:max_distance_in_miles
       ent:message_seq := ent:message_seq + 1
       ent:drivers_for_deliveries{delivery_id} := driver_profile
       raise shop event "subscribe_recent_driver"
@@ -177,12 +232,84 @@ ruleset shop {
     }
   }
   
+  
+    rule confirm_delivery_pickup {
+    select when shop delivery_picked_up
+    pre {
+      delivery_id = event:attr("Delivery_ID")
+      shop_profile = message{"Shop_Profile"}
+      shop_location = shop_profile{"location"}
+      shop_tx = shop_profile{"contaxt_tx"}
+    }
+    if driver_id == meta:picoId then 
+      event:send({"eci":shop_tx, "domain": "shop", "type": "delivery_picked_up", "attrs":{
+          "Delivery_ID": delivery_id,
+      }})
+    fired {
+      raise shop event "notify_enroute"
+        attributes {"Delivery_ID": delivery_id}
+    }
+  }
+  
+  rule confirm_delivery_dropoff {
+    select when driver delivery_dropped_off
+    pre {
+      delivery_id = event:attr("Delivery_ID")
+      time_delivered = event:attr("time_delivered")
+      driver_profile = ent:drivers_for_deliveries{delivery_id}
+      message = ent:delivery_requests{delivery_id}
+      delivery_deadline = message{"Delivery_Deadline"}
+    }
+    if time_delivered <= delivery_deadline then 
+      event:send({"eci":driver_tx, "domain": "driver", "type": "new_rating", "attrs":{
+          "Delivery_ID": delivery_id,
+          "rating": 5
+      }})
+    fired {
+      ent:current_delivery := null
+      ent:delivery_requests := ent:delivery_requests.delete(delivery_id)
+      ent:drivers_for_deliveries := ent:drivers_for_deliveries.delete(delivery_id)
+    } else {
+      raise shop event "update_rating_late_delivery"
+        attributes {
+          "Driver_Profile": driver_profile
+        }
+      raise shop event "notify_delivery"
+      }
+  }
+  
+  rule update_rating {
+    select when shop update_rating_late_delivery
+    pre{
+      driver_tx = event:attr("Driver_Profile"){"contat_tx"}
+      driver_id = event:attr("Driver_Profile"){"id"}
+    }
+    event:send({"eci":driver_tx, "domain": "shop", "type": "new_rating", "attrs":{
+          "driver_id": driver_id,
+          "rating": 3
+    }})
+  }
+  
   rule notify_customer_delivery {
     select when shop notify_delivery
+    
+    send_directive("delivery", {"status": "Delivery completed!"})
   }
   
   rule notify_customer_enroute {
     select when shop notify_enroute
+    
+    pre{
+      delivery_id = event:attr("Delivery_ID")
+      driver_name = ent:drivers_for_deliveries{delivery_id}{"name"}
+      message = ent:delivery_requests{delivery_id}
+      shop_location = message{"Shop_Profile"}{"location"}
+      destination = message{"Delivery_Destination"}
+      time = "23 minutes" 
+      twillio_message = <<Your Florist, #{driver_name} will be there in #{time}>>
+    }
+    
+    send_directive("delivery_in_progress", {"status": message})
   }
   
   
@@ -325,6 +452,7 @@ ruleset shop {
         ent:delivery_seq := 0
         ent:delivery_requests := {}
         ent:drivers_for_deliveries := {}
+        ent:max_distance_in_miles := 30
     }
   }
   
