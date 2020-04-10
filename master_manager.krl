@@ -36,11 +36,11 @@ ruleset master_manager {
     notfired {
       raise wrangler event "child_creation"
       attributes {"name": shop_manager,
-                  "color": "#ffff00",
+                  "color": "#ff0000", //TODO change colors
                   "rids": shop_rulesets }
       raise wrangler event "child_creation"
       attributes {"name": driver_manager,
-                  "color": "#ffff00",
+                  "color": "#ff0000",
                   "rids": driver_rulesets }
     }
   }
