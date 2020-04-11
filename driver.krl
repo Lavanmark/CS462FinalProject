@@ -42,7 +42,10 @@ ruleset driver {
     }
     
     is_qualified = function(delivery_req) {
-      true //TODO: Ammon - update this to check if the driver meets the qualifications
+      min_driver_rating = delivery_req{"Shop_Profile"}{"min_driver_rating"}
+      driver_rating = profile:get_rating().klog("Rating:- ")
+      
+      driver_rating > min_driver_rating => true | false
     }
     
     min_known_peers = 2
@@ -74,7 +77,7 @@ ruleset driver {
       message = event:attr("message")
       shop_tx = message{"Shop_Profile"}{"contact_tx"}
       delivery_id = message{"Delivery_ID"}
-      qualified = is_qualified(message)
+      qualified = is_qualified(message).klog("Is qualified:-")
     }
     if qualified then noop()
     fired {
@@ -148,6 +151,68 @@ ruleset driver {
       ent:available_deliveries := ent:available_deliveries.delete(delivery_id)
       raise driver_gossip event "rumor"
         attributes {"message": message}
+      raise driver event "delivery_picked_up"
+        attributes {
+          "Delivery_ID": delivery_id,
+          "driver_id": driver_id
+        }
+    }
+  }
+  
+  rule confirm_delivery_pickup {
+    select when driver delivery_picked_up
+    pre {
+      driver_id = event:attr("driver_id")
+      delivery_id = event:attr("Delivery_ID")
+      
+      shop_profile = ent:current_delivery{"Shop_Profile"}
+      shop_location = shop_profile{"location"}
+      shop_tx = shop_profile{"contact_tx"}
+    }
+    if driver_id == meta:picoId then 
+      event:send({"eci":shop_tx, "domain": "shop", "type": "delivery_picked_up", "attrs":{
+          "Delivery_ID": delivery_id,
+      }})
+    fired {
+      raise driver event "location_updated"
+        attributes {"location": shop_location}
+      raise driver event "delivery_dropped_off"
+        attributes event:attrs
+    }
+  }
+  
+  rule confirm_delivery_dropoff {
+    select when driver delivery_dropped_off
+    pre {
+      driver_id = event:attr("driver_id")
+      delivery_id = event:attr("Delivery_ID")
+      
+      destination = ent:current_delivery{"Delivery_Destination"}
+      shop_tx = ent:current_delivery{"Shop_Profile"}{"contact_tx"}
+    }
+    if driver_id == meta:picoId then 
+      event:send({"eci":shop_tx, "domain": "shop", "type": "delivery_dropped_off", "attrs":{
+          "Delivery_ID": delivery_id,
+          "time_delivered": time:now()
+      }})
+    fired {
+      ent:current_delivery := null
+
+      raise driver event "location_updated"
+        attributes {"location": destination}
+    }
+  }
+  
+  rule update_rating {
+    select when driver new_rating
+    pre{
+      rating = event:attr("rating")
+      driver_id = event:attr("driver_id")
+    }
+    if driver_id == meta:picoId then noop()
+    fired {
+      raise driver event "update_rating"
+        attributes {"rating": rating}
     }
   }
   
