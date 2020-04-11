@@ -28,7 +28,7 @@ ruleset flower_shop_manager {
       shops.isnull() == false && shops.length() > 0
     }
     
-    shop_rulesets = ["shop", "shop_profile", "shop_keys", "customer_communication"]
+    shop_rulesets = ["shop", "shop_profile", "shop_keys", "customer_communication", "google_maps_keys", "distance"]
     initial_drivers = 2
   }
   

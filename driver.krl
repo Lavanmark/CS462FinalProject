@@ -153,7 +153,6 @@ ruleset driver {
         attributes {"message": message}
       raise driver event "delivery_picked_up"
         attributes {
-          "message": message,
           "Delivery_ID": delivery_id,
           "driver_id": driver_id
         }
@@ -163,10 +162,10 @@ ruleset driver {
   rule confirm_delivery_pickup {
     select when driver delivery_picked_up
     pre {
-      message = event:attr("message")
       driver_id = event:attr("driver_id")
       delivery_id = event:attr("Delivery_ID")
-      shop_profile = message{"Shop_Profile"}
+      
+      shop_profile = ent:current_delivery{"Shop_Profile"}
       shop_location = shop_profile{"location"}
       shop_tx = shop_profile{"contact_tx"}
     }
@@ -185,9 +184,11 @@ ruleset driver {
   rule confirm_delivery_dropoff {
     select when driver delivery_dropped_off
     pre {
+      driver_id = event:attr("driver_id")
       delivery_id = event:attr("Delivery_ID")
-      shop_tx = message{"Shop_Profile"}{"contact_tx"}
-      destination = message{"Delivery_Destination"}
+      
+      destination = ent:current_delivery{"Delivery_Destination"}
+      shop_tx = ent:current_delivery{"Shop_Profile"}{"contact_tx"}
     }
     if driver_id == meta:picoId then 
       event:send({"eci":shop_tx, "domain": "shop", "type": "delivery_dropped_off", "attrs":{

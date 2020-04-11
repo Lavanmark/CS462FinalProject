@@ -23,7 +23,7 @@ ruleset shop {
         { "name": "get_schedule"}
       ] , "events":
       [ //{ "domain": "d1", "type": "t1" }
-        { "domain": "shop", "type": "new_order", "attrs": [ "destination", "pickup time", "delivery deadline" ] },
+        { "domain": "shop", "type": "new_order", "attrs": [ "destination", "pickup time", "delivery deadline", "customer's number" ] },
         { "domain": "shop", "type": "update_max_distance", "attrs": [ "max_distance" ] }
       ]
     }
@@ -70,7 +70,7 @@ ruleset shop {
     // time for pick up (typically now)
     // required delivery time for urgent deliveries --> defaults to midnight same day
     
-    create_new_delivery_request_rumor_message = function(profile, destination, pickup_time, deadline) {
+    create_new_delivery_request_rumor_message = function(profile, destination, pickup_time, deadline, customer_number) {
       {
         "Message_ID": new_message_ID(),
         "Type": "Delivery_Request",
@@ -78,7 +78,8 @@ ruleset shop {
         "Shop_Profile": profile,
         "Delivery_Destination": destination,
         "Pickup_Time": pickup_time,
-        "Delivery_Deadline": deadline
+        "Delivery_Deadline": deadline,
+        "Customer_Number": customer_number
       }
     }
     
@@ -104,7 +105,7 @@ ruleset shop {
       
       distance = driver_rating >= min_driver_rating => distance:get_distance(shop_location, driver_location) | ent:max_distance_in_miles + 1
 
-      result = (distance < ent:max_distance_in_miles) => { "qualified": true, "distance": distance } | 
+      result = (distance <= ent:max_distance_in_miles) => { "qualified": true, "distance": distance } | 
         ((driver_rating >= min_driver_rating) => { 
           "qualified": false, 
           "distance": distance:get_distance(shop_location, driver_location) 
@@ -140,10 +141,11 @@ ruleset shop {
     select when shop new_order
     pre {
       dest = event:attr("destination")
+      customer_number = event:attr("customer's number")
       pickup = event:attr("pickup time") || time:now()
       deadline = event:attr("delivery deadline") || time:add(time:new(time:now().substr(0,10)),{"days": 1})
       profile = profile:get_message_profile()
-      message = create_new_delivery_request_rumor_message(profile, dest, pickup, deadline)
+      message = create_new_delivery_request_rumor_message(profile, dest, pickup, deadline, customer_number)
     }
     always {
       ent:message_seq := ent:message_seq + 1
@@ -237,14 +239,7 @@ ruleset shop {
     select when shop delivery_picked_up
     pre {
       delivery_id = event:attr("Delivery_ID")
-      shop_profile = message{"Shop_Profile"}
-      shop_location = shop_profile{"location"}
-      shop_tx = shop_profile{"contaxt_tx"}
     }
-    if driver_id == meta:picoId then 
-      event:send({"eci":shop_tx, "domain": "shop", "type": "delivery_picked_up", "attrs":{
-          "Delivery_ID": delivery_id,
-      }})
     fired {
       raise shop event "notify_enroute"
         attributes {"Delivery_ID": delivery_id}
@@ -252,48 +247,77 @@ ruleset shop {
   }
   
   rule confirm_delivery_dropoff {
-    select when driver delivery_dropped_off
+    select when shop delivery_dropped_off
     pre {
       delivery_id = event:attr("Delivery_ID")
       time_delivered = event:attr("time_delivered")
       driver_profile = ent:drivers_for_deliveries{delivery_id}
       message = ent:delivery_requests{delivery_id}
       delivery_deadline = message{"Delivery_Deadline"}
+      on_time = time_delivered <= delivery_deadline
     }
-    if time_delivered <= delivery_deadline then 
-      event:send({"eci":driver_tx, "domain": "driver", "type": "new_rating", "attrs":{
-          "Delivery_ID": delivery_id,
-          "rating": 5
-      }})
+    if on_time then noop()
     fired {
-      ent:current_delivery := null
-      ent:delivery_requests := ent:delivery_requests.delete(delivery_id)
-      ent:drivers_for_deliveries := ent:drivers_for_deliveries.delete(delivery_id)
+      raise shop event "update_rating_on_time_delivery"
+        attributes {
+          "Driver_Profile": driver_profile
+        }
     } else {
       raise shop event "update_rating_late_delivery"
         attributes {
           "Driver_Profile": driver_profile
         }
-      raise shop event "notify_delivery"
       }
+    finally {
+      raise shop event "notify_delivery"
+        attributes {"Delivery_ID": delivery_id}
+    }
   }
   
-  rule update_rating {
+  rule update_rating_late_delivery {
     select when shop update_rating_late_delivery
     pre{
-      driver_tx = event:attr("Driver_Profile"){"contat_tx"}
+      driver_tx = event:attr("Driver_Profile"){"contact_tx"}
       driver_id = event:attr("Driver_Profile"){"id"}
     }
-    event:send({"eci":driver_tx, "domain": "shop", "type": "new_rating", "attrs":{
+    event:send({"eci":driver_tx, "domain": "driver", "type": "new_rating", "attrs":{
           "driver_id": driver_id,
           "rating": 3
     }})
   }
   
+  rule update_rating_on_time_delivery {
+    select when shop update_rating_on_time_delivery
+    pre{
+      driver_tx = event:attr("Driver_Profile"){"contact_tx"}
+      driver_id = event:attr("Driver_Profile"){"id"}
+    }
+    event:send({"eci":driver_tx, "domain": "driver", "type": "new_rating", "attrs":{
+          "driver_id": driver_id,
+          "rating": 5
+    }})
+  }
+  
   rule notify_customer_delivery {
     select when shop notify_delivery
+    pre{
+      delivery_id = event:attr("Delivery_ID")
+      message = ent:delivery_requests{delivery_id}
+      to = message{"Customer_Number"}
+      shop_name = message{"Shop_Profile"}{"name"}
+      from = profile:get_phone_number()
+      twilio_message = <<Your Flowers are here. Thank you for shopping with us! We hope to see you back at #{shop_name} again!>>
+    }
+    every{
+      twilio:send_sms(to, from, twilio_message) setting(content);
+
+      send_directive("response_content", {"content": content})
+    }
     
-    send_directive("delivery", {"status": "Delivery completed!"})
+    always {
+      ent:delivery_requests := ent:delivery_requests.delete(delivery_id)
+      ent:drivers_for_deliveries := ent:drivers_for_deliveries.delete(delivery_id)
+    }
   }
   
   rule notify_customer_enroute {
@@ -303,13 +327,18 @@ ruleset shop {
       delivery_id = event:attr("Delivery_ID")
       driver_name = ent:drivers_for_deliveries{delivery_id}{"name"}
       message = ent:delivery_requests{delivery_id}
+      to = message{"Customer_Number"}
       shop_location = message{"Shop_Profile"}{"location"}
       destination = message{"Delivery_Destination"}
-      time = "23 minutes" 
-      twillio_message = <<Your Florist, #{driver_name} will be there in #{time}>>
+      from = profile:get_phone_number()
+      time = distance:get_duration(shop_location, destination)
+      twilio_message = <<Your Florist, #{driver_name}, will be there in #{time}>>
     }
-    
-    send_directive("delivery_in_progress", {"status": message})
+    every{
+      twilio:send_sms(to, from, twilio_message) setting(content);
+
+      send_directive("response_content", {"content": content})
+    }
   }
   
   

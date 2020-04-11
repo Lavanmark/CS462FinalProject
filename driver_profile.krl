@@ -3,7 +3,7 @@ ruleset driver_profile {
     use module io.picolabs.subscription alias subscription
     use module io.picolabs.wrangler alias wrangler
     shares __testing, get_rating, get_location, get_profile
-    provides get_profile
+    provides get_profile, get_rating
   }
   global {
     __testing = { "queries":
@@ -89,7 +89,7 @@ ruleset driver_profile {
     select when wrangler ruleset_added where rids >< meta:rid
     always {
         ent:name := wrangler:myself(){"name"}
-        ent:location := "UNKNOWN"
+        ent:location := "Salt Lake City,UT"
         ent:driver_rating := 5
         ent:total_ratings := 0
     }

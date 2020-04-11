@@ -2,7 +2,8 @@ ruleset customer_communication {
   meta {
     configure using account_sid = ""
                     auth_token = ""
-    shares __testing, get_messages
+    shares __testing, get_messages, send_sms
+    provides send_sms
   }
   global {
     __testing = { "queries":
@@ -10,7 +11,6 @@ ruleset customer_communication {
         { "name": "get_messages"}
       ] , "events":
       [ 
-        //{ "domain": "flower_shop", "type": "customer_sms", "attrs": [ "to", "from", "message" ] }
       ]
     }
     
@@ -40,23 +40,4 @@ ruleset customer_communication {
       messages{"content"}.decode()
     }
   }
-  
-  rule message_customer {
-    select when flower_shop customer_sms
-    pre {
-      to = event:attr("to")
-      from = event:attr("from")
-      message = event:attr("message")
-    }
-    every {
-      //is there a cleaner way to do this??
-      send_sms(to, from, message) setting(result)
-        if (((to.isnull() || to == "" ) || (from.isnull() || from == "") || (message.isnull() || message == "")) == false)
-      
-      send_directive("flower_shop", {"customer_sms" : result.isnull() =>  
-                        "Could not send sms message to customer!" | result })
-    }
-  }
-  
-  
 }
