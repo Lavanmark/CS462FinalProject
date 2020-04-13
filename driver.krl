@@ -151,11 +151,10 @@ ruleset driver {
       ent:available_deliveries := ent:available_deliveries.delete(delivery_id)
       raise driver_gossip event "rumor"
         attributes {"message": message}
-      raise driver event "delivery_picked_up"
-        attributes {
+      schedule driver event "delivery_picked_up" at time:add(time:now(), {"seconds": 15}) attributes {
           "Delivery_ID": delivery_id,
           "driver_id": driver_id
-        }
+      }
     }
   }
   
@@ -176,7 +175,7 @@ ruleset driver {
     fired {
       raise driver event "location_updated"
         attributes {"location": shop_location}
-      raise driver event "delivery_dropped_off"
+      schedule driver event "delivery_dropped_off" at time:add(time:now(), {"seconds": 15}) 
         attributes event:attrs
     }
   }
