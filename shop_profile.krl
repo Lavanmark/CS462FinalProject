@@ -2,30 +2,29 @@ ruleset shop_profile {
   meta {
     use module io.picolabs.wrangler alias wrangler
     use module io.picolabs.subscription alias subscription
-    shares __testing, get_message_profile
-    provides get_message_profile, get_phone_number
+    shares __testing, get_message_profile, get_auto_select
+    provides get_message_profile, get_auto_select
   }
   global {
     __testing = { "queries":
       [ { "name": "__testing" }
-      //, { "name": "entry", "args": [ "key" ] }
+      , { "name": "get_auto_select"}
       ] , "events":
-      [ //{ "domain": "d1", "type": "t1" }
-       { "domain": "shop", "type": "update_profile", "attrs": [ "name", "location", "phone_number" ] }
+      [ { "domain": "shop", "type": "toggle_auto_accept" }
+      //, { "domain": "d2", "type": "t2", "attrs": [ "a1", "a2" ] }
       ]
-    }
-    
-    get_phone_number = function() {
-      ent:phone_number
     }
     
     get_message_profile = function() {
       {
         "location": ent:location,
         "min_driver_rating": ent:min_driver_rating,
-        "contact_tx": wrangler:myself(){"eci"},
-        "name": ent:name
+        "contact_tx": wrangler:myself(){"eci"}
       }
+    }
+    
+    get_auto_select = function() {
+      ent:auto_select
     }
     
   }
@@ -45,16 +44,22 @@ ruleset shop_profile {
     }
   }
   
+  rule toggle_auto_select {
+    select when shop toggle_auto_select
+    always{
+      ent:auto_select := not ent:auto_select
+    }
+  }
   
   rule ruleset_added { 
     //initialize all entity variables here
     select when wrangler ruleset_added where rids >< meta:rid
     always {
         ent:name := wrangler:myself(){"name"}
-        ent:location := "Provo,UT"
+        ent:location := "UNKNOWN"
         ent:phone_number := "+19999999999"
         ent:min_driver_rating := 0
-        ent:auto_select := false
+        ent:auto_select := true
     }
   }
 }
