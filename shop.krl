@@ -13,7 +13,7 @@ ruleset shop {
     use module io.picolabs.wrangler alias wrangler
     use module io.picolabs.subscription alias subscription
     
-    shares __testing, get_known_drivers, get_known_driver_names, get_schedule
+    shares __testing, get_known_drivers, get_known_driver_names, get_schedule, get_deliveries, get_bids
   }
   global {
     __testing = { "queries":
@@ -254,7 +254,7 @@ ruleset shop {
       driver_id = event:attr("driver_id")
       bid_info = ent:delivery_bids{delivery_id}.filter(function(bid){
         bid{["Driver_Profile", "id"]} == driver_id
-      }).head()
+      }).head().klog("selected driver:")
       driver_profile = bid_info{"Driver_Profile"}
       driver_tx = driver_profile{"contact_tx"}
       distance = bid_info{"distance"}
@@ -271,15 +271,17 @@ ruleset shop {
       })
       raise shop event "subscribe_recent_driver"
         attributes driver_profile
+      raise shop event "reject_remaining_bids"
+        attributes bid_info
     }
   }
   
   rule reject_remaining_bids {
     select when shop reject_remaining_bids
-    foreach ent:delivery_bids{delivery_id} setting(bid)
+    foreach ent:delivery_bids{event:attr("Delivery_ID")} setting(bid)
     pre {
       delivery_id = bid{"Delivery_ID"}
-      driver_profile = bid{"Driver_Profile"}
+      driver_profile = bid{"Driver_Profile"}.klog("reject driver:")
       distance = bid{"distance"}
     }
     always{
@@ -289,6 +291,7 @@ ruleset shop {
           "Driver_Profile": driver_profile,
           "distance": distance
         }
+      ent:delivery_bids := ent:delivery_bids.delete(delivery_id) on final
     }
   }
   
