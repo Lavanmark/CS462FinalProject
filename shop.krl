@@ -20,11 +20,14 @@ ruleset shop {
       [ { "name": "__testing" },
         { "name": "get_known_drivers" },
         { "name": "get_known_driver_names"},
-        { "name": "get_schedule"}
+        { "name": "get_schedule"},
+        { "name": "get_deliveries"},
+        { "name": "get_bids", "args": ["delivery_id"]}
       ] , "events":
       [ //{ "domain": "d1", "type": "t1" }
         { "domain": "shop", "type": "new_order", "attrs": [ "destination", "pickup time", "delivery deadline", "customer's number" ] },
-        { "domain": "shop", "type": "update_max_distance", "attrs": [ "max_distance" ] }
+        { "domain": "shop", "type": "update_max_distance", "attrs": [ "max_distance" ] },
+        { "domain": "shop", "type": "manually_accept_bid", "attrs": ["delivery_id", "driver_id"]}
       ]
     }
     
@@ -37,6 +40,14 @@ ruleset shop {
     
     get_schedule = function() {
       schedule:list()
+    }
+    
+    get_bids = function(delivery_id) {
+      ent:delivery_bids{delivery_id}
+    }
+    
+    get_deliveries = function() {
+      ent:delivery_requests
     }
     
     get_longest_driver = function() {
@@ -171,18 +182,27 @@ ruleset shop {
       delivery_id = event:attr("Delivery_ID")
       driver_profile = event:attr("Driver_Profile")
       is_available = ent:drivers_for_deliveries{delivery_id}.isnull()
-       result = does_driver_qualify(delivery_id, driver_profile)
-       driver_qualifies = result{"qualified"}
-       distance = result{"distance"}
+      result = does_driver_qualify(delivery_id, driver_profile)
+      driver_qualifies = result{"qualified"}
+      distance = result{"distance"}
+      auto_select = profile:get_auto_select()
     }
     if is_available && driver_qualifies then noop()
     fired {
+      
+      raise shop event "store_potential_bid"
+        attributes {
+          "Delivery_ID": delivery_id,
+          "Driver_Profile": driver_profile,
+          "distance": distance
+        } if not auto_select
+      
       raise shop event "accept_bid"
         attributes {
           "Delivery_ID": delivery_id,
           "Driver_Profile": driver_profile,
           "distance": distance
-        }
+        } if auto_select
     } else {
       raise shop event "reject_bid"
         attributes {
@@ -192,6 +212,19 @@ ruleset shop {
         }
     }
   }
+  
+  
+  rule store_bid {
+    select when shop store_potential_bid
+    pre {
+      delivery_id = event:attr("Delivery_ID")
+      bid_info = event:attrs
+    }
+    always{
+      ent:delivery_bids{delivery_id} := ent:delivery_bids{delivery_id}.defaultsTo([]).append(bid_info)
+    }
+  }
+  
   
   rule reject_bid {
     select when shop reject_bid
@@ -211,6 +244,51 @@ ruleset shop {
     fired{
       ent:max_distance_in_miles := distance
         if distance > ent:max_distance_in_miles
+    }
+  }
+  
+  rule manually_accept_bid {
+    select when shop manually_accept_bid
+    pre {
+      delivery_id = event:attr("delivery_id")
+      driver_id = event:attr("driver_id")
+      bid_info = ent:delivery_bids{delivery_id}.filter(function(bid){
+        bid{["Driver_Profile", "id"]} == driver_id
+      }).head()
+      driver_profile = bid_info{"Driver_Profile"}
+      driver_tx = driver_profile{"contact_tx"}
+      distance = bid_info{"distance"}
+      message = create_bid_accepted_message(delivery_id, driver_profile{"id"})
+    }
+    event:send({"eci": driver_tx, "domain": "driver", "type": "bid_accepted", "attrs": message })
+    fired{
+      ent:max_distance_in_miles := distance
+        if distance < ent:max_distance_in_miles
+      ent:message_seq := ent:message_seq + 1
+      ent:drivers_for_deliveries{delivery_id} := driver_profile
+      ent:delivery_bids{delivery_id} := ent:delivery_bids{delivery_id}.filter(function(bid){
+        bid{["Driver_Profile", "id"]} != driver_id
+      })
+      raise shop event "subscribe_recent_driver"
+        attributes driver_profile
+    }
+  }
+  
+  rule reject_remaining_bids {
+    select when shop reject_remaining_bids
+    foreach ent:delivery_bids{delivery_id} setting(bid)
+    pre {
+      delivery_id = bid{"Delivery_ID"}
+      driver_profile = bid{"Driver_Profile"}
+      distance = bid{"distance"}
+    }
+    always{
+      raise shop event "reject_bid"
+        attributes {
+          "Delivery_ID": delivery_id,
+          "Driver_Profile": driver_profile,
+          "distance": distance
+        }
     }
   }
   
@@ -235,7 +313,7 @@ ruleset shop {
   }
   
   
-    rule confirm_delivery_pickup {
+  rule confirm_delivery_pickup {
     select when shop delivery_picked_up
     pre {
       delivery_id = event:attr("Delivery_ID")
@@ -482,6 +560,7 @@ ruleset shop {
         ent:delivery_requests := {}
         ent:drivers_for_deliveries := {}
         ent:max_distance_in_miles := 30
+        ent:delivery_bids := {}
     }
   }
   
