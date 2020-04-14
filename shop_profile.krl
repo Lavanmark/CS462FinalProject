@@ -10,7 +10,7 @@ ruleset shop_profile {
       [ { "name": "__testing" }
       , { "name": "get_auto_select"}
       ] , "events":
-      [ { "domain": "shop", "type": "toggle_auto_accept" }
+      [ { "domain": "shop", "type": "toggle_auto_select" }
       //, { "domain": "d2", "type": "t2", "attrs": [ "a1", "a2" ] }
       ]
     }
@@ -47,7 +47,7 @@ ruleset shop_profile {
   rule toggle_auto_select {
     select when shop toggle_auto_select
     always{
-      ent:auto_select := not ent:auto_select
+      ent:auto_select := ent:auto_select => false | true
     }
   }
   
